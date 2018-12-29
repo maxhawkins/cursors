@@ -1,0 +1,203 @@
+<!doctype html>
+<html>
+<head>
+	<title>Cursors</title>
+	<style>
+		body {
+			font-family: sans-serif;
+            padding: 0;
+            margin: 0;
+		}
+		#create {
+			font-size: 24px;
+			border-radius: 10px;
+			background: white;
+			border: solid #CCC 1px;
+			margin: 15px;
+			padding: 15px 40px;
+		}
+		#canvas {
+			width: 100%;
+            height: 100%;
+			display: none;
+		}
+	</style>
+</head>
+<body>
+	<div id="main">
+        <audio id="video" autoplay></audio> <br />
+		<button id="create" onclick="window.createSession()">Start</button>
+    </div>
+    <canvas id="canvas"></canvas>
+	<script>
+		var pc;
+		var log = msg => console.log(msg);
+		var video = document.getElementById('video');
+        var button = document.getElementById('create');
+        var main = document.getElementById('main');
+        var canvas = document.getElementById('canvas');
+
+        const MsgType = {
+            start: 0,
+            stop: 1,
+            move: 2,
+            positions: 3,
+        };
+
+		pc = new RTCPeerConnection({
+			offerToReceiveAudio: true,
+			// iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+		});
+		const dc = pc.createDataChannel('dc');
+		dc.onopen = () => {
+			console.log('open');
+        };
+
+        const packets = [];
+
+        const dots = {};
+
+        const draw = () => {
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let id in dots) {
+                const {x, y, on} = dots[id];
+
+                if (on) {
+                    ctx.fillStyle = '#F00';
+                } else {
+                    ctx.fillStyle = '#000';
+                }
+
+                const radius = on ? 20 : 10;
+
+                ctx.beginPath();
+                ctx.ellipse(
+                    x * window.devicePixelRatio,
+                    y * window.devicePixelRatio,
+                    radius, radius,
+                    0, 0, 2 * Math.PI, 0);
+                ctx.fill();
+                ctx.closePath();
+            }
+            window.requestAnimationFrame(draw);
+        }
+        window.requestAnimationFrame(draw);
+
+        let dat;
+        dc.binaryType = 'arraybuffer';
+		dc.onmessage = e => {
+            const type = new DataView(e.data, 0, 1).getUint8(0);
+            dat = e.data;
+            const payload = new DataView(e.data, 1);
+            switch (type) {
+            case MsgType.positions:
+                const ids = [];
+                for (let i = 0; i < payload.byteLength; i += 12) {
+                    const x = payload.getUint32(i);
+                    const y = payload.getUint32(i + 4);
+                    const id = payload.getUint32(i + 8);
+
+                    dots[id] = dots[id] || {};
+                    dots[id].x = x;
+                    dots[id].y = y;
+                }
+                break;
+            case MsgType.start:
+                const id = payload.getUint32(0);
+                dots[id] = dots[id] || {};
+                dots[id].on = true;
+                break;
+            case MsgType.stop:
+                for (let id in dots) {
+                    dots[id].on = false;    
+                }
+                break;
+            default:
+                console.warn(type);
+                break;
+            }
+		};
+		pc.oniceconnectionstatechange = e => {
+			log(pc.iceConnectionState);
+		};
+		pc.onicecandidate = event => {
+			if (event.candidate) { return; }
+			const localDesc = JSON.stringify(pc.localDescription);
+			fetch('/start', {
+				method: 'POST',
+				body: localDesc,
+			})
+				.then(resp => resp.json())
+				.then(answer => pc.setRemoteDescription(answer));
+		};
+		pc.onnegotiationneeded = e => {
+		};
+		pc.ontrack = e => {
+			video.srcObject = e.streams[0];
+            main.style.display = 'none';
+            canvas.style.display = 'block';
+		};
+		pc.ondatachannel = e => {
+			alert("term");
+        };
+        
+        canvas.width = window.innerWidth * window.devicePixelRatio;
+        canvas.height = window.innerWidth * window.devicePixelRatio;
+        const ctx = canvas.getContext('2d');
+
+        const send = (type, payload) => {
+            if (dc.readyState !== 'open') { return; }
+
+            const len = payload ? payload.byteLength + 1 : 1;
+            const buf = new Uint8Array(len);
+            buf[0] = type;
+            if (payload) {
+                buf.set(new Uint8Array(payload), 1);
+            }
+
+            dc.send(buf);
+        }
+
+        const rpc = {
+            start: () => send(MsgType.start),
+            stop: () => send(MsgType.stop),
+            move: (x, y) => {
+                const buf = new ArrayBuffer(8);
+                const view = new DataView(buf);
+                view.setUint32(0, x);
+                view.setUint32(4, y);
+                send(MsgType.move, buf);
+            },
+        }
+
+		window.addEventListener('mousedown', () => {
+            rpc.start();
+        }, false);
+		window.addEventListener('mousemove', e => {
+            rpc.move(e.clientX, e.clientY);
+		}, false);
+		window.addEventListener('mouseup', () => {
+			rpc.stop();
+        }, false);
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth * window.devicePixelRatio;
+            canvas.height = window.innerHeight * window.devicePixelRatio;
+        })
+
+		window.createSession = () => {
+			window.created = true;
+			navigator.mediaDevices.getUserMedia({video: false, audio: true})
+				.then(s => {
+					stream = s;
+					pc.addStream(s);
+
+					pc.createOffer()
+						.then(d => pc.setLocalDescription(d))
+						.catch(log);
+				})
+				.catch(log);
+		};
+	</script>
+</body>
+</html>
