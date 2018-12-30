@@ -174,11 +174,20 @@
 		window.addEventListener('mousedown', () => {
             rpc.start();
         }, false);
+		window.addEventListener('touchdown', () => {
+            rpc.start();
+        }, false);
 		window.addEventListener('mousemove', e => {
+            rpc.move(e.clientX, e.clientY);
+		}, false);
+		window.addEventListener('touchmove', e => {
             rpc.move(e.clientX, e.clientY);
 		}, false);
 		window.addEventListener('mouseup', () => {
 			rpc.stop();
+        }, false);
+		window.addEventListener('touchup', () => {
+            rpc.start();
         }, false);
         window.addEventListener('resize', () => {
             canvas.width = window.innerWidth * window.devicePixelRatio;
