@@ -124,7 +124,7 @@
 		pc.onicecandidate = event => {
 			if (event.candidate) { return; }
 			const localDesc = JSON.stringify(pc.localDescription);
-			fetch('/start', {
+			fetch('https://cursors.maxhawkins.me/start', {
 				method: 'POST',
 				body: localDesc,
 			})

@@ -1,5 +1,7 @@
 # github.com/elazarl/go-bindata-assetfs v1.0.0
 github.com/elazarl/go-bindata-assetfs
+# github.com/gorilla/handlers v1.4.0
+github.com/gorilla/handlers
 # github.com/pions/datachannel v1.0.0
 github.com/pions/datachannel
 # github.com/pions/dtls v1.0.2

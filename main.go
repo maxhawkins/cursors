@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/gorilla/handlers"
 	"github.com/pions/webrtc"
 )
 
@@ -73,10 +74,14 @@ func main() {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	fmt.Println("listening at", port)
-	// siteURL := fmt.Sprintf("http://localhost:%d/", port)
-	// open(siteURL)
 
-	if err := http.Serve(l, demo); err != nil {
+	var handler http.Handler
+	handler = demo
+	handler = handlers.CORS(
+		handlers.AllowedOrigins([]string{"*"}),
+	)(handler)
+
+	if err := http.Serve(l, handler); err != nil {
 		log.Fatal(err)
 	}
 }
