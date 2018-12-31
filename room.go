@@ -1,105 +1,156 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/golang/protobuf/proto"
+	pb "github.com/maxhawkins/cursors/proto"
 	"github.com/pions/webrtc/pkg/media"
 )
 
-type MousePos struct {
-	X, Y uint32
-}
+type UserID uint32
 
 type Room struct {
 	floorMu sync.RWMutex
-	floor   int
+	floor   UserID
+
+	lastIDMu sync.Mutex
+	lastID   UserID
 
 	membersMu sync.Mutex
-	members   []*Conn
+	members   map[UserID]*Conn
 
 	posMu sync.Mutex
-	pos   []MousePos
+	pos   map[UserID]*pb.CursorPosition
 }
 
-func (r *Room) TakeFloor(id uint32) {
+func NewRoom() *Room {
+	return &Room{
+		pos:     make(map[UserID]*pb.CursorPosition),
+		members: make(map[UserID]*Conn),
+	}
+}
+
+func (r *Room) TakeFloor(id UserID) {
 	r.floorMu.Lock()
 	defer r.floorMu.Unlock()
 
-	if r.floor != -1 { // someone else has the floor
+	if r.floor != 0 { // someone else has the floor
 		return
 	}
 
-	r.floor = int(id)
-
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, id)
-	for _, m := range r.members {
-		go m.SendMessage(MsgStart, buf)
-	}
+	r.floor = id
 }
 
-func (r *Room) GiveFloor(id uint32) {
+func (r *Room) GiveFloor(id UserID) {
 	r.floorMu.Lock()
 	defer r.floorMu.Unlock()
 
-	if r.floor != int(id) { // someone else has the floor
+	if r.floor != id { // someone else has the floor
 		return
 	}
 
-	r.floor = -1
-
-	for _, m := range r.members {
-		go m.SendMessage(MsgStop, nil)
-	}
+	r.floor = 0
 }
 
-func (r *Room) AddMember(c *Conn) {
+func (r *Room) nextID() UserID {
+	r.lastIDMu.Lock()
+	defer r.lastIDMu.Unlock()
+	r.lastID++
+	return r.lastID
+}
+
+func (r *Room) RemoveMember(id UserID) {
 	r.membersMu.Lock()
-	id := uint32(len(r.members))
-	r.members = append(r.members, c)
-	r.pos = append(r.pos, MousePos{})
+	delete(r.members, id)
 	r.membersMu.Unlock()
 
-	c.OnMessage = func(t MsgType, data []byte) {
-		switch t {
-		case MsgStart:
-			r.TakeFloor(id)
-		case MsgStop:
-			r.GiveFloor(id)
-		case MsgMove:
-			x := binary.BigEndian.Uint32(data)
-			y := binary.BigEndian.Uint32(data[4:])
+	r.floorMu.Lock()
+	if r.floor == id {
+		r.floor = 0
+	}
+	r.floorMu.Unlock()
 
-			r.posMu.Lock()
-			r.pos[id] = MousePos{x, y}
-			r.posMu.Unlock()
+	r.posMu.Lock()
+	delete(r.pos, id)
+	r.posMu.Unlock()
+}
+
+func (r *Room) AddMember(c *Conn) UserID {
+	id := r.nextID()
+
+	r.membersMu.Lock()
+	r.members[id] = c
+	r.membersMu.Unlock()
+
+	c.OnFrame = func(frame *pb.ClientFrame) {
+		r.posMu.Lock()
+		defer r.posMu.Unlock()
+
+		if _, ok := r.members[id]; !ok {
+			// left room
+			return
+		}
+
+		p := frame.Position
+		oldP, ok := r.pos[id]
+		if !ok || oldP.TimestampMs < p.TimestampMs {
+			r.pos[id] = p
+		}
+	}
+
+	c.OnRPC = func(m *pb.RPC) {
+		switch m.Type {
+		case pb.RPCType_BYE:
+			fmt.Println("BYE")
+			r.RemoveMember(id)
+
+		case pb.RPCType_SPEAK:
+			var req pb.SpeakRequest
+			if err := proto.Unmarshal(m.Payload, &req); err != nil {
+				fmt.Println(err)
+			}
+			if req.Speaking {
+				r.TakeFloor(id)
+			} else {
+				r.GiveFloor(id)
+			}
 		}
 	}
 
 	go func() {
-		lastMsg := make([]byte, 0, 1024)
-		msg := make([]byte, 0, 1024)
+		var lastFrame *pb.ServerFrame
+		sendFrame := func() {
+			var positions []*pb.CursorPosition
+			for id, p := range r.pos {
+				p.UserId = uint32(id)
+				positions = append(positions, p)
+			}
+
+			frame := &pb.ServerFrame{
+				Positions: positions,
+				SpeakerId: uint32(r.floor),
+			}
+
+			if !proto.Equal(frame, lastFrame) {
+				c.SendFrame(frame)
+			}
+
+			lastFrame = frame
+		}
+
+		sendFrame()
 		for range time.Tick(20 * time.Millisecond) {
-			msg = msg[:len(r.pos)*12]
-			var off int
-			for i, p := range r.pos {
-				binary.BigEndian.PutUint32(msg[off:off+4], p.X)
-				off += 4
-				binary.BigEndian.PutUint32(msg[off:off+4], p.Y)
-				off += 4
-				binary.BigEndian.PutUint32(msg[off:off+4], uint32(i))
-				off += 4
+			r.membersMu.Lock()
+			_, ok := r.members[id]
+			r.membersMu.Unlock()
+			if !ok {
+				break
 			}
 
-			if !bytes.Equal(lastMsg, msg) {
-				c.SendMessage(MsgPositions, msg)
-			}
-
-			lastMsg = lastMsg[:len(msg)]
-			copy(lastMsg, msg)
+			sendFrame()
 		}
 	}()
 
@@ -108,14 +159,14 @@ func (r *Room) AddMember(c *Conn) {
 			r.floorMu.RLock()
 			floor := r.floor
 			r.floorMu.RUnlock()
-			if floor != int(id) {
+			if floor != id {
 				continue
 			}
 
 			s := &media.RTCSample{Data: pkt.Payload, Samples: 960}
 
 			for i, member := range r.members {
-				if i == int(id) { // skip us
+				if i == id { // skip us
 					continue
 				}
 
@@ -123,4 +174,6 @@ func (r *Room) AddMember(c *Conn) {
 			}
 		}
 	}()
+
+	return id
 }

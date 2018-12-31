@@ -13,7 +13,7 @@ import (
 
 type Demo struct {
 	RTCConfig webrtc.RTCConfiguration
-	room      Room
+	room      *Room
 }
 
 func (d *Demo) HandleStart(w http.ResponseWriter, r *http.Request) {
@@ -57,13 +57,14 @@ func main() {
 	fmt.Println("Starting up...")
 	webrtc.RegisterCodec(webrtc.NewRTCRtpOpusCodec(webrtc.DefaultPayloadTypeOpus, 48000, 2))
 
-	demo := &Demo{}
+	demo := &Demo{
+		room: NewRoom(),
+	}
 	demo.RTCConfig = webrtc.RTCConfiguration{
 		IceServers: []webrtc.RTCIceServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
 	}
-	demo.room.floor = -1
 
 	// Start server on an open port
 	l, err := net.Listen("tcp", ":8080")

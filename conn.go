@@ -1,22 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sync"
-	"time"
 
+	"github.com/golang/protobuf/proto"
+
+	pb "github.com/maxhawkins/cursors/proto"
 	"github.com/pions/webrtc"
 	"github.com/pions/webrtc/pkg/datachannel"
 	"github.com/pions/webrtc/pkg/media"
-)
-
-type MsgType uint8
-
-const (
-	MsgStart MsgType = iota
-	MsgStop
-	MsgMove
-	MsgPositions
 )
 
 type Conn struct {
@@ -26,20 +20,14 @@ type Conn struct {
 	inMu sync.Mutex
 	in   *webrtc.RTCTrack
 
-	dcMu sync.RWMutex
-	dc   *webrtc.RTCDataChannel
+	dcMu         sync.RWMutex
+	rpcDC        *webrtc.RTCDataChannel
+	frameDC      *webrtc.RTCDataChannel
+	lastFrameSeq uint32
 
-	sync struct {
-		sync.Mutex
-
-		baseTsPrev, baseTs, lastTs, prevTs     uint32
-		baseSeqPrev, baseSeq, lastSeq, prevSeq uint16
-		lastSSRC                               uint32
-		lastTime                               time.Time
-	}
-
-	OnMessage func(MsgType, []byte)
-	OnReady   func()
+	OnRPC   func(*pb.RPC)
+	OnFrame func(*pb.ClientFrame)
+	OnReady func()
 }
 
 func NewConn(config webrtc.RTCConfiguration) (*Conn, error) {
@@ -77,23 +65,50 @@ func (c *Conn) Negotiate(offer webrtc.RTCSessionDescription) (answer webrtc.RTCS
 	return answer, nil
 }
 
-func (c *Conn) SendMessage(t MsgType, data []byte) {
+func (c *Conn) SendFrame(frame *pb.ServerFrame) error {
 	c.dcMu.RLock()
 	defer c.dcMu.RUnlock()
 
-	if c.dc == nil {
-		fmt.Println("no dc to send to")
-		return
+	if c.frameDC == nil {
+		return errors.New("no dc to send to")
 	}
 
-	msg := make([]byte, len(data)+1)
-	copy(msg[1:], data)
-	msg[0] = byte(t)
-
-	if err := c.dc.Send(datachannel.PayloadBinary{Data: msg}); err != nil {
-		fmt.Println(err)
-		return
+	data, err := proto.Marshal(frame)
+	if err != nil {
+		return err
 	}
+
+	payload := datachannel.PayloadBinary{Data: data}
+	if err := c.frameDC.Send(payload); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Conn) SendMessage(rt pb.RPCType, msg proto.Message) error {
+	c.dcMu.RLock()
+	defer c.dcMu.RUnlock()
+
+	if c.rpcDC == nil {
+		return errors.New("no dc to send to")
+	}
+
+	payload, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	data, err := proto.Marshal(&pb.RPC{
+		Type:    rt,
+		Payload: payload,
+	})
+
+	if err := c.rpcDC.Send(datachannel.PayloadBinary{Data: data}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (c *Conn) onTrack(track *webrtc.RTCTrack) {
@@ -115,72 +130,65 @@ func (c *Conn) SendSample(s media.RTCSample) {
 	c.out.Samples <- s
 }
 
-// func (c *Conn) SendPacket(p *rtp.Packet) {
-// 	s := &c.sync
-// 	s.Lock()
-// 	defer s.Unlock()
-
-// 	if p.SSRC != s.lastSSRC {
-// 		fmt.Println("new ssrc", p.SSRC)
-// 		s.lastSSRC = p.SSRC
-// 		s.baseTsPrev = s.lastTs
-// 		s.baseTs = p.Timestamp
-// 		s.baseSeqPrev = s.lastSeq
-// 		s.baseSeq = p.SequenceNumber
-
-// 		if !s.lastTime.IsZero() {
-// 			timeDiff := time.Since(s.lastTime)
-// 			const akhz = 48
-// 			sampDiff := uint32((timeDiff * time.Duration(akhz)) / time.Second)
-// 			if sampDiff == 0 {
-// 				sampDiff = 1
-// 			}
-// 			s.baseTsPrev += sampDiff
-// 			s.prevTs += sampDiff
-// 			s.lastTs += sampDiff
-// 		}
-// 	}
-
-// 	s.prevTs = s.lastTs
-// 	s.lastTs = (p.Timestamp - s.baseTs) + s.baseTsPrev
-// 	s.prevSeq = s.lastSeq
-// 	s.lastSeq = (p.SequenceNumber - s.baseSeq) + s.baseSeqPrev + 1
-
-// 	p.Timestamp = s.lastTs
-// 	p.SequenceNumber = s.lastSeq
-
-// 	s.lastTime = time.Now()
-
-// 	p.SSRC = c.out.Ssrc
-// 	c.out.RawRTP <- p
-// }
-
 func (c *Conn) onDataChannel(dc *webrtc.RTCDataChannel) {
 	c.dcMu.Lock()
 	defer c.dcMu.Unlock()
 
-	if c.dc != nil {
-		fmt.Println("Warning: extra data channel opened")
-		return
+	// TODO: make sure this doens't happen multiple times
+	switch dc.Label {
+	case "frame":
+		c.frameDC = dc
+		dc.OnMessage(func(p datachannel.Payload) {
+			c.onFrameMessage(p)
+		})
+	case "rpc":
+		c.rpcDC = dc
+		dc.OnMessage(func(p datachannel.Payload) {
+			c.onRPCMessage(p)
+		})
 	}
-	c.dc = dc
-
-	dc.OnMessage(c.onDataMessage)
 }
 
-func (c *Conn) onDataMessage(p datachannel.Payload) {
+func (c *Conn) onFrameMessage(p datachannel.Payload) error {
 	pl, ok := p.(*datachannel.PayloadBinary)
 	if !ok {
-		fmt.Println("unknown data type")
-		return
+		return errors.New("expected binary payload")
 	}
-	if len(pl.Data) == 0 {
-		fmt.Println("invalid message")
-		return
-	}
-	typ := MsgType(pl.Data[0])
 
-	if c.OnMessage != nil {
-		c.OnMessage(typ, pl.Data[1:])
+	msg := &pb.ClientFrame{}
+	if err := proto.Unmarshal(pl.Data, msg); err != nil {
+		return err
 	}
+
+	c.dcMu.Lock()
+	if msg.Sequence < c.lastFrameSeq {
+		c.dcMu.Unlock()
+		return nil
+	}
+	c.lastFrameSeq++
+	c.dcMu.Unlock()
+
+	if c.OnFrame != nil {
+		c.OnFrame(msg)
+	}
+
+	return nil
+}
+
+func (c *Conn) onRPCMessage(p datachannel.Payload) error {
+	pl, ok := p.(*datachannel.PayloadBinary)
+	if !ok {
+		return errors.New("expected binary payload")
+	}
+
+	msg := &pb.RPC{}
+	if err := proto.Unmarshal(pl.Data, msg); err != nil {
+		return err
+	}
+
+	if c.OnRPC != nil {
+		c.OnRPC(msg)
+	}
+
+	return nil
 }

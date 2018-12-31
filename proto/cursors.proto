@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+enum RPCType {
+    UNKNOWN = 0;
+    SPEAK = 1;
+    BYE = 2;
+}
+
+message RPC {
+    RPCType type = 1;
+    bytes payload = 2;
+}
+
+message SpeakRequest {
+    bool speaking = 1;
+}
+
+
+
+
+message CursorPosition {
+    uint32 x = 1;
+    uint32 y = 2;
+    uint32 user_id = 3;
+    uint64 timestamp_ms = 4;
+}
+
+
+message ClientFrame {
+    uint32 sequence = 1;
+    CursorPosition position = 2;
+}
+
+message ServerFrame {
+    uint32 sequence = 1;
+    repeated CursorPosition positions = 2;
+    uint32 speaker_id = 3;
+}
