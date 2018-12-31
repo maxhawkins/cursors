@@ -1,5 +1,5 @@
-# github.com/elazarl/go-bindata-assetfs v1.0.0
-github.com/elazarl/go-bindata-assetfs
+# github.com/golang/protobuf v1.2.0
+github.com/golang/protobuf/proto
 # github.com/gorilla/handlers v1.4.0
 github.com/gorilla/handlers
 # github.com/pions/datachannel v1.0.0

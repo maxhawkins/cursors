@@ -1,7 +1,7 @@
 module github.com/maxhawkins/cursors
 
 require (
-	github.com/elazarl/go-bindata-assetfs v1.0.0
+	github.com/elazarl/go-bindata-assetfs v1.0.0 // indirect
 	github.com/golang/protobuf v1.2.0
 	github.com/gorilla/handlers v1.4.0
 	github.com/pions/webrtc v1.2.1-0.20181228023033-acc342fa5887
