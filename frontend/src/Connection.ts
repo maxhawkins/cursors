@@ -9,6 +9,8 @@ import {
     ClientFrame,
 } from "./proto";
 
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+
 export default class Connection {
 
     public onAudio: (stream: MediaStream) => any;
@@ -86,7 +88,7 @@ export default class Connection {
         if (e.candidate) { return; }
 
         const localDesc = JSON.stringify(this.conn.localDescription);
-        const resp = await fetch('http://localhost:8080/start', {
+        const resp = await fetch(BACKEND_URL + '/start', {
             body: localDesc,
             method: 'POST',
         });
