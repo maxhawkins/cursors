@@ -1,4 +1,3 @@
-//go:generate go run github.com/elazarl/go-bindata-assetfs/go-bindata-assetfs -tags assetfs www/...
 package main
 
 import (
@@ -51,8 +50,7 @@ func (d *Demo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.HandleStart(w, r)
 		return
 	}
-
-	http.FileServer(assetFS()).ServeHTTP(w, r)
+	http.NotFound(w, r)
 }
 
 func main() {
